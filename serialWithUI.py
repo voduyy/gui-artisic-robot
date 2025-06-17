@@ -21,7 +21,7 @@ ENCODING = 'utf-8'
 IMG_WIDTH = 640
 IMG_HEIGHT = 480
 MAX_LOG_LINES = 500
-PACKAGE_SIZE = 36 # 24
+PACKAGE_SIZE = 64 # 24
 
 error_codes_to_message = [
     (1, "Expected command letter", "Expected command letter", "G-code words consist of a letter and a value. Letter was not found."),
@@ -221,7 +221,7 @@ class SerialCommunication(serial.threaded.LineReader):
             with self.ok_lock:
                 if self.ok_received:
                     return True
-            time.sleep(0.001)
+            time.sleep(0.00001)
         return False
 
     def get_ok_count(self, max_count=PACKAGE_SIZE, timeout=1.0):
@@ -260,7 +260,7 @@ class SerialCommunication(serial.threaded.LineReader):
 def find_uart_port():
     ports = list_ports.comports()
     for port, desc, hwid in ports:
-        if "ttyACM" in port or "USB" in port or "ACM" in port or "COM18" in port:
+        if "ttyACM" in port or "USB" in port or "ACM" in port or "COM" in port:
             return port
     return None
 
@@ -279,6 +279,7 @@ def send_uart_command(protocol, cmd, wait_ok=True, retries=3):
     return False
 
 def reset_system(protocol):
+    send_uart_command(protocol, "M5")
     send_uart_command(protocol, "$X")
     send_uart_command(protocol, "G28")
     protocol.reset_count_queue()
@@ -307,7 +308,7 @@ def is_blocking_command(cmd):
 def is_motion_command(cmd):
     return cmd.startswith("G0") or cmd.startswith("G1")
 
-def send_gcode_package(protocol, gcode_lines, total_cmds, shared_state, stop_event, queue_lock):
+def send_gcode_package(app_instance, protocol, gcode_lines, total_cmds, shared_state, stop_event, queue_lock):
     with queue_lock:
         size = PACKAGE_SIZE - shared_state['on_flight']
         for _ in range(size):
@@ -315,7 +316,7 @@ def send_gcode_package(protocol, gcode_lines, total_cmds, shared_state, stop_eve
                 break
             if shared_state['sent'] >= total_cmds or shared_state['on_flight'] >= PACKAGE_SIZE:
                 break
-
+            app_instance.stop_event.clear()
             cmd = gcode_lines[shared_state['sent']]
 
             if is_motion_command(cmd):
@@ -330,10 +331,11 @@ def send_gcode_package(protocol, gcode_lines, total_cmds, shared_state, stop_eve
             print(
                 f"Đã gửi: {shared_state['sent']}, Chờ done sau khi gửi: {shared_state['on_flight']}, Blocking: {shared_state['blocking']}")
 
-def send_gcode_file(protocol, gcode_lines, total_cmds, shared_state, queue_lock, send_signal, stop_event):
+def send_gcode_file(app_instance, protocol, gcode_lines, total_cmds, shared_state, queue_lock, send_signal, stop_event):
     while not stop_event.is_set():
         send_signal.wait()
-        send_gcode_package(protocol, gcode_lines, total_cmds, shared_state, stop_event, queue_lock)
+        app_instance.stop_event.clear()
+        send_gcode_package(app_instance, protocol, gcode_lines, total_cmds, shared_state, stop_event, queue_lock)
         with queue_lock:
             print(
                 f"Đã gửi: {shared_state['sent']}, Chờ done sau khi gửi: {shared_state['on_flight']}, Blocking: {shared_state['blocking']}")
@@ -495,19 +497,18 @@ class App:
     def do_continue_gcode(self):
         if self.gcode_file_path:
             self.stop_event.clear()
+            
             threading.Thread(target=self.send_gcode_in_background, daemon=True).start()
 
     def do_stop(self):
-        self.stop_event.set()
-        if self.protocol:
-            send_uart_command(self.protocol, "$X")
+        return 
 
     def send_gcode_in_background(self):
         gcode_lines = read_gcode_file(self.gcode_file_path)
         total_cmds = len(gcode_lines)
         self.stop_event.clear()
         thread1 = threading.Thread(target=send_gcode_file,
-                         args=(self.protocol, gcode_lines, total_cmds, self.shared_state, self.queue_lock, self.send_signal, self.stop_event),
+                         args=(self, self.protocol, gcode_lines, total_cmds, self.shared_state, self.queue_lock, self.send_signal, self.stop_event),
                          daemon=True)
         # thread2 = threading.Thread(target=receive_gcode_ok,
         #                            args=(self.protocol, self.shared_state, self.queue_lock,
@@ -546,7 +547,7 @@ class App:
         if not port:
             messagebox.showerror("Error", "Không tìm thấy cổng UART")
             return
-        ser = serial.Serial(port, 115200, timeout=1)
+        ser = serial.Serial(port, 921600, timeout=1)
         thread = serial.threaded.ReaderThread(ser, SerialCommunication)
         thread.start()
         self.protocol = thread.connect()[1]
