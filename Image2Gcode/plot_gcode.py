@@ -35,7 +35,7 @@ def draw_gcode_and_save(file_path, output_image_path="output.png", angle_deg=0):
             x = x if x is not None else current_x
             y = y if y is not None else current_y
             segments.append(((current_x, current_y), (x, y)))
-            colors.append('red' if line.startswith('G0') else 'blue')
+            colors.append('red' if line.startswith('G0') else 'black')
             current_x, current_y = x, y
 
     # Xoay quanh tâm
@@ -48,7 +48,7 @@ def draw_gcode_and_save(file_path, output_image_path="output.png", angle_deg=0):
     for ((x0, y0), (x1, y1)), color in zip(segments, colors):
         x0r, y0r = rotate_point(x0, y0, angle_deg, (center_x, center_y))
         x1r, y1r = rotate_point(x1, y1, angle_deg, (center_x, center_y))
-        ax.plot([x0r, x1r], [y0r, y1r], color=color, alpha=0.4 if color == 'red' else 1.0)
+        ax.plot([x0r, x1r], [y0r, y1r], color=color, alpha=0.0 if color == 'red' else 1.0)
 
     ax.invert_yaxis()
     ax.invert_xaxis()
@@ -57,3 +57,5 @@ def draw_gcode_and_save(file_path, output_image_path="output.png", angle_deg=0):
     plt.tight_layout()
     plt.savefig(output_image_path, dpi=300)
     plt.close()
+
+draw_gcode_and_save("C:/Users\LOQ\PycharmProjects\serial_gcode\Image2Gcode\output_gcode/test.nc")

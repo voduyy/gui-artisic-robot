@@ -18,12 +18,13 @@ import matplotlib.pyplot as plt
 import os
 import warnings
 from EvaluateResult import consine_similarity as validate, extract_frame
+from log_uart import log_uart
 
 ENCODING = 'utf-8'
 IMG_WIDTH = 640
 IMG_HEIGHT = 480
 MAX_LOG_LINES = 500
-PACKAGE_SIZE = 36 # 24
+PACKAGE_SIZE = 56 # 24
 
 error_codes_to_message = [
     (1, "Expected command letter", "Expected command letter", "G-code words consist of a letter and a value. Letter was not found."),
@@ -182,32 +183,20 @@ def show_setting_codes_window(root):
     for row in grbl_settings:
         tree.insert("", "end", values=row)
 
-def log_uart(msg):
-    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-    full_msg = f"[{timestamp}] {msg}"
-    print(full_msg)
-    if hasattr(App, 'uart_log_box') and App.uart_log_box:
-        App.uart_log_box.configure(state='normal')
-        App.uart_log_box.insert(tk.END, full_msg + "\n")
-        App.uart_log_box.see(tk.END)
-
-        # if int(App.uart_log_box.index('end-1c').split('.')[0]) > MAX_LOG_LINES:
-        #     App.uart_log_box.delete('1.0', '2.0')
-
-        App.uart_log_box.configure(state='disabled')
 
 class SerialCommunication(serial.threaded.LineReader):
     TERMINATOR = b'\r\n'
-    def __init__(self):
+    def __init__(self,uart_log_queue=None):
         super().__init__()
         self.ok_received = False
         self.done_queue = queue.Queue()
         self.ok_queue = queue.Queue()
         self.ok_lock = threading.Lock()
+        self.uart_log_queue = uart_log_queue
         self.stop_done = False
 
     def handle_line(self, line):
-        log_uart(f"⬅️ RX: {line.strip()}")
+        log_uart(f"⬅️ RX: {line.strip()}", self.uart_log_queue)
         if line.strip() == "ok":
             with self.ok_lock:
                 self.ok_received = True
@@ -281,8 +270,8 @@ def send_uart_command(protocol, cmd, wait_ok=True, retries=3):
         protocol.ok_received = False
         msg = f"{cmd}\n"
         protocol.transport.write(msg.encode(ENCODING))
-        log_uart(f"➡️ TX: {cmd}")
-        log_uart(f"Sending: {msg}")
+        if hasattr(protocol, 'uart_log_queue') and protocol.uart_log_queue is not None:
+            log_uart(f"➡️ TX: {cmd}", protocol.uart_log_queue)
         if wait_ok:
             return protocol.wait_for_receive_ok()
         else:
@@ -292,11 +281,14 @@ def send_uart_command(protocol, cmd, wait_ok=True, retries=3):
 
 
 def reset_system(protocol):
+    protocol.transport.write(b'\x18')
     send_uart_command(protocol, "$X")
+    send_uart_command(protocol, "M5")
     send_uart_command(protocol, "G28")
     send_uart_command(protocol, "F2000")
     send_uart_command(protocol, "G1 X0 Y0 Z0 A0 B0")
     send_uart_command(protocol, "G92 X0 Y0 Z0 A0 B0")
+    protocol.shared_state = protocol.reset_shared_state()
     protocol.get_done_count()
     protocol.reset_count_queue()
 
@@ -352,7 +344,7 @@ def send_gcode_file(protocol, gcode_lines, total_cmds, shared_state, queue_lock,
         send_signal.wait()
         send_gcode_package(protocol, gcode_lines, total_cmds, shared_state, stop_event, queue_lock)
         with queue_lock:
-            log_uart(
+            print(
                 f"Send: {shared_state['sent']}, Chờ done sau khi gửi: {shared_state['on_flight']}, Blocking: {shared_state['blocking']}")
 
             if shared_state['sent'] >= total_cmds:
@@ -379,8 +371,15 @@ def receive_gcode_done(protocol, total_cmds, shared_state, queue_lock, send_sign
             continue
 
 
+def get_serial_ports():
+    ports = list_ports.comports()
+    return [port.device for port in ports]
 class App:
     def __init__(self, root):
+        self.port_var = tk.StringVar()
+        self.serial_port_dropdown = None  # OptionMenu sẽ lưu ở đây
+        self.serial_ports = []  # Danh sách COM port
+
         self.gcode_lines = None
         self.uart_log_box = None
         self.manual_entry = None
@@ -410,12 +409,14 @@ class App:
         self.gcode_path_var = tk.StringVar(value="Chưa chọn file G-code")
         self.start_recv_thread()
         self.ok_received = False
+        self.uart_log_queue = queue.Queue()
         self.done_queue = queue.Queue()
         self.ok_queue = queue.Queue()
 
         self.build_gui()
         self.start_serial()
-        self.start_camera(1)
+        self.process_uart_log_queue()
+        self.start_camera(0)
 
     def build_gui(self):
         img_frame = ttk.Frame(self.root)
@@ -429,7 +430,7 @@ class App:
 
         source_frame = ttk.Frame(self.root)
         source_frame.pack(pady=5)
-        self.source_var = tk.StringVar(value="ex_camera")
+        self.source_var = tk.StringVar(value="in_camera")
         ttk.Label(source_frame, text="Source:").pack(side="left")
         ttk.Radiobutton(source_frame, text="Camera Laptop", variable=self.source_var, value="in_camera", command=self.switch_source).pack(side="left")
         ttk.Radiobutton(source_frame, text="Camera ngoài", variable=self.source_var, value="ex_camera", command=self.switch_source).pack(side="left")
@@ -477,7 +478,22 @@ class App:
         self.uart_log_box = tk.Text(log_frame, height=15, wrap="word", bg="white", fg="navy", insertbackground="white")
         self.uart_log_box.pack(fill="both", expand=True)
         self.uart_log_box.configure(state='disabled')
-        App.uart_log_box = self.uart_log_box
+
+        port_frame = ttk.Frame(self.root)
+        port_frame.pack(pady=5)
+        ttk.Label(port_frame, text="Cổng UART:").pack(side="left")
+
+        self.serial_ports = get_serial_ports()
+        if not self.serial_ports:
+            self.serial_ports = ["None"]
+        self.port_var.set(self.serial_ports[0])
+
+        self.serial_port_dropdown = ttk.OptionMenu(
+            port_frame, self.port_var, self.port_var.get(), *self.serial_ports
+        )
+        self.serial_port_dropdown.pack(side="left", padx=5)
+        ttk.Button(port_frame, text="Kết nối lại", command=self.restart_serial).pack(side="left", padx=5)
+        self.process_uart_log_queue()
 
     def image_processing(self):
         def thread_job():
@@ -513,7 +529,19 @@ class App:
             'on_flight': 0,
             'blocking': 0
         }
-        threading.Thread(target=self.send_gcode_in_background, daemon=True).start()
+        threading.Thread(target=self.send_gcode_in_background, args=(self.uart_log_queue,), daemon=True).start()
+
+    def process_uart_log_queue(self):
+        try:
+            while True:
+                msg = self.uart_log_queue.get_nowait()
+                self.uart_log_box.configure(state='normal')
+                self.uart_log_box.insert(tk.END, msg + "\n")
+                self.uart_log_box.see(tk.END)
+                self.uart_log_box.configure(state='disabled')
+        except queue.Empty:
+            pass
+        self.root.after(50, self.process_uart_log_queue)
 
     def do_continue_gcode(self):
         def continue_thread():
@@ -562,11 +590,11 @@ class App:
             plt.tight_layout()
             plt.show()
 
-    def send_gcode_in_background(self):
+    def send_gcode_in_background(self, uart_box):
         self.gcode_lines = read_gcode_file(self.gcode_file_path)
         total_cmds = len(self.gcode_lines)
         self.stop_event.clear()
-        self.shared_state = {'on_flight': 0, 'sent': 0, 'received': 0}
+        self.shared_state = {'on_flight': 0, 'sent': 0, 'received': 0, 'blocking': 0}
         thread1 = threading.Thread(target=send_gcode_file,
                          args=(self.protocol, self.gcode_lines, total_cmds, self.shared_state, self.queue_lock, self.send_signal, self.stop_event),
                          daemon=True)
@@ -580,7 +608,7 @@ class App:
 
         thread3.join()
         end_time = time.time()
-        log_uart(f"Execution time: {end_time-start_time}")
+        log_uart(f"Execution time: {end_time-start_time}", self.uart_log_queue)
 
     def send_manual_command(self):
         cmd = self.manual_entry.get().strip().upper()
@@ -592,20 +620,40 @@ class App:
             self.shared_state = {'on_flight': 0, 'sent': 0, 'received': 0}
             if cmd in ["CTRL X", "CTRL+X"]:
                 self.protocol.transport.write(b'\x18')
-                log_uart("➡️TX: Ctrl+X (0x18)")
             else:
                 send_uart_command(self.protocol, cmd)
 
     def start_serial(self):
-        port = find_uart_port()
+        port = self.port_var.get()
         if not port:
             messagebox.showerror("Error", "Không tìm thấy cổng UART")
             return
-        ser = serial.Serial(port, 115200, timeout=1)
-        thread = serial.threaded.ReaderThread(ser, SerialCommunication)
-        thread.start()
-        self.protocol = thread.connect()[1]
-        send_uart_command(self.protocol, "$$", wait_ok=False)
+        try:
+            ser = serial.Serial(port, 921600, timeout=1)
+            thread = serial.threaded.ReaderThread(ser, lambda: SerialCommunication(self.uart_log_queue))
+            thread.start()
+            self.protocol = thread.connect()[1]
+            send_uart_command(self.protocol, "$$", wait_ok=False)
+        except Exception as e:
+            messagebox.showerror("Lỗi kết nối", str(e))
+
+    def restart_serial(self):
+        # Ngắt kết nối cũ nếu có
+        if self.protocol and hasattr(self.protocol, 'transport'):
+            try:
+                self.protocol.transport.close()
+            except:
+                pass
+        # Làm mới danh sách cổng
+        ports = get_serial_ports()
+        if not ports:
+            ports = ["None"]
+        menu = self.serial_port_dropdown["menu"]
+        menu.delete(0, "end")
+        for p in ports:
+            menu.add_command(label=p, command=lambda v=p: self.port_var.set(v))
+        self.port_var.set(ports[0])
+        self.start_serial()
 
     def start_camera(self, camera_index=0):
         if self.cap:
@@ -646,7 +694,10 @@ class App:
                     image_simulate = (Image.open(f"Image2Gcode/simulate_image/{image_handle_simulate_name}.png")
                                             .resize((640, 480)))
                     self.root.after(0, lambda: self.display_image(self.right_img_label, image_simulate))
-
+                elif global_var.is_get_image_from_phone:
+                    phone_image = (Image.open(f"phone_image/{global_var.index_capture_image}.jpg")
+                                      .resize((640, 480)))
+                    self.root.after(0, lambda: self.display_image(self.right_img_label,phone_image))
             time.sleep(0.0001)
 
     def switch_source(self):
@@ -696,7 +747,7 @@ class App:
             global_var.image_name = ""
             global_var.image_name = f"{global_var.index_capture_image}.jpg"
             img = Image.fromarray(cv2.cvtColor(self.last_frame, cv2.COLOR_BGR2RGB)).resize((IMG_WIDTH, IMG_HEIGHT))
-            if self.source_var == "in_camera":
+            if self.source_var.get() == "in_camera":
                 img.save(f"Image2Gcode/input_image/capture/{global_var.index_capture_image}.jpg")
             else:
                 img.save(f"EvaluateResult/input_capture_excam/{global_var.index_capture_image}.jpg")
@@ -710,14 +761,15 @@ class App:
                 try:
                     image_path = recv_phone_image.receive_file()
                     if image_path:
-                        img = Image.open(image_path)
-                        img = img.resize((int(1836 * 480 / 3264), 480), Image.LANCZOS)
-                        self.right_img_label.after(0, lambda: self.display_image(self.right_img_label, img))
                         self.show_mirror = False
                         self.is_simulate_image = False
                         global_var.is_capture = False
                         global_var.is_choose_image = False
                         global_var.is_get_image_from_phone = True
+                        global_var.is_finish_covert_image = False
+                        img = Image.open(image_path)
+                        img = img.resize((int(1836 * 480 / 3264), 480), Image.LANCZOS)
+                        self.right_img_label.after(0, lambda: self.display_image(self.right_img_label, img))
 
                 except Exception as e:
                     print(f"[!] Lỗi khi nhận ảnh: {e}")
@@ -726,6 +778,9 @@ class App:
         # Tạo và khởi chạy thread
         recv_thread = threading.Thread(target=recv_loop, daemon=True)
         recv_thread.start()
+
+    def reset_shared_state():
+        return {'sent': 0, 'received': 0, 'on_flight': 0, 'blocking': 0}
 
     def display_image(self, label, img):
         imgtk = ImageTk.PhotoImage(img)
@@ -749,10 +804,10 @@ class App:
 
 if __name__ == "__main__":
     # cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0 = all logs, 1 = filter INFO, 2 = filter WARNING, 3 = filter ERROR
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0 = all logs, 1 = filter INFO, 2 = filter WARNING, 3 = filter ERROR
     os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
     global_var.image_name = ""
-    global_var.index_capture_image = 1
+    global_var.index_capture_image = 0
     global_var.is_capture = False
     global_var.is_finish_covert_image = False
     global_var.is_choose_image = False
