@@ -1,6 +1,8 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
+from turtledemo.penrose import start
+
 from PIL import Image, ImageTk
 import cv2
 import threading
@@ -24,7 +26,7 @@ ENCODING = 'utf-8'
 IMG_WIDTH = 640
 IMG_HEIGHT = 480
 MAX_LOG_LINES = 500
-PACKAGE_SIZE = 56 # 24
+PACKAGE_SIZE = 64 # 24
 
 error_codes_to_message = [
     (1, "Expected command letter", "Expected command letter", "G-code words consist of a letter and a value. Letter was not found."),
@@ -183,6 +185,19 @@ def show_setting_codes_window(root):
     for row in grbl_settings:
         tree.insert("", "end", values=row)
 
+# def log_uart(msg):
+#     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+#     full_msg = f"[{timestamp}] {msg}"
+#     print(full_msg)
+#     if hasattr(App, 'uart_log_box') and App.uart_log_box:
+#         App.uart_log_box.configure(state='normal')
+#         App.uart_log_box.insert(tk.END, full_msg + "\n")
+#         App.uart_log_box.see(tk.END)
+#
+#         # if int(App.uart_log_box.index('end-1c').split('.')[0]) > MAX_LOG_LINES:
+#         #     App.uart_log_box.delete('1.0', '2.0')
+#
+#         App.uart_log_box.configure(state='disabled')
 
 class SerialCommunication(serial.threaded.LineReader):
     TERMINATOR = b'\r\n'
@@ -222,7 +237,7 @@ class SerialCommunication(serial.threaded.LineReader):
             with self.ok_lock:
                 if self.ok_received:
                     return True
-            time.sleep(0.001)
+            time.sleep(0.00001)
         return False
 
     def get_ok_count(self, max_count=PACKAGE_SIZE, timeout=1.0):
@@ -316,7 +331,7 @@ def is_blocking_command(cmd):
 def is_motion_command(cmd):
     return cmd.startswith("G0") or cmd.startswith("G1")
 
-def send_gcode_package(protocol, gcode_lines, total_cmds, shared_state, stop_event, queue_lock):
+def send_gcode_package(app_instance, protocol, gcode_lines, total_cmds, shared_state, stop_event, queue_lock):
     with queue_lock:
         size = PACKAGE_SIZE - shared_state['on_flight']
         for _ in range(size):
@@ -324,7 +339,7 @@ def send_gcode_package(protocol, gcode_lines, total_cmds, shared_state, stop_eve
                 break
             if shared_state['sent'] >= total_cmds or shared_state['on_flight'] >= PACKAGE_SIZE:
                 break
-
+            app_instance.stop_event.clear()
             cmd = gcode_lines[shared_state['sent']]
 
             if is_motion_command(cmd):
@@ -339,17 +354,33 @@ def send_gcode_package(protocol, gcode_lines, total_cmds, shared_state, stop_eve
             print(
                 f"Đã gửi: {shared_state['sent']}, Chờ done sau khi gửi: {shared_state['on_flight']}, Blocking: {shared_state['blocking']}")
 
-def send_gcode_file(protocol, gcode_lines, total_cmds, shared_state, queue_lock, send_signal, stop_event):
+def send_gcode_file(app_instance, protocol, gcode_lines, total_cmds, shared_state, queue_lock, send_signal, stop_event):
     while not stop_event.is_set():
         send_signal.wait()
-        send_gcode_package(protocol, gcode_lines, total_cmds, shared_state, stop_event, queue_lock)
+        app_instance.stop_event.clear()
+        send_gcode_package(app_instance, protocol, gcode_lines, total_cmds, shared_state, stop_event, queue_lock)
         with queue_lock:
             print(
-                f"Send: {shared_state['sent']}, Chờ done sau khi gửi: {shared_state['on_flight']}, Blocking: {shared_state['blocking']}")
+                f"Đã gửi: {shared_state['sent']}, Chờ done sau khi gửi: {shared_state['on_flight']}, Blocking: {shared_state['blocking']}")
 
             if shared_state['sent'] >= total_cmds:
                 break
             send_signal.clear()
+
+# def receive_gcode_ok(protocol, shared_state, queue_lock, send_signal, stop_event):
+#     while not stop_event.is_set():
+#         try:
+#             ok_count = protocol.get_ok_count(timeout=0.1)
+#             with queue_lock:
+#                 # if ok_count > 0 and shared_state['blocking'] > 0:
+#                 #     shared_state['blocking'] = min(0,shared_state['blocking'] - ok_count)
+#                 #     shared_state['received'] += shared_state['blocking']
+#                 #     shared_state['blocking'] = 0
+#                 if shared_state['on_flight'] < PACKAGE_SIZE or shared_state['blocking'] == 0:
+#                     send_signal.set()
+#         except Exception as e:
+#             print(f"Lỗi nhận OK: {e}")
+#             continue
 
 def receive_gcode_done(protocol, total_cmds, shared_state, queue_lock, send_signal, stop_event):
     while not stop_event.is_set():
@@ -544,18 +575,13 @@ class App:
         self.root.after(50, self.process_uart_log_queue)
 
     def do_continue_gcode(self):
-        def continue_thread():
-            if self.gcode_file_path:
-                self.stop_event.clear()
-                threading.Thread(target=self.send_gcode_in_background, daemon=True).start()
-        threading.Thread(target=continue_thread, daemon=True).start()
+        if self.gcode_file_path:
+            self.stop_event.clear()
+
+            threading.Thread(target=self.send_gcode_in_background, daemon=True).start()
 
     def do_stop(self):
-        self.stop_event.set()
-        def stop_thread():
-            if self.protocol:
-                send_uart_command(self.protocol, "$X", False)
-        threading.Thread(target=stop_thread, daemon=True).start()
+        return
 
     def validate_result_window(self):
             # if self.source_var == "ex_camera":
