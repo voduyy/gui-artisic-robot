@@ -303,7 +303,6 @@ def reset_system(protocol):
     send_uart_command(protocol, "F2000")
     send_uart_command(protocol, "G1 X0 Y0 Z0 A0 B0")
     send_uart_command(protocol, "G92 X0 Y0 Z0 A0 B0")
-    protocol.shared_state = protocol.reset_shared_state()
     protocol.get_done_count()
     protocol.reset_count_queue()
 
@@ -404,6 +403,7 @@ def receive_gcode_done(protocol, total_cmds, shared_state, queue_lock, send_sign
 
 def get_serial_ports():
     ports = list_ports.comports()
+    print("DEBUG | Các cổng phát hiện:", [port.device for port in ports])
     return [port.device for port in ports]
 class App:
     def __init__(self, root):
@@ -511,34 +511,37 @@ class App:
         self.uart_log_box.configure(state='disabled')
 
         port_frame = ttk.Frame(self.root)
-        port_frame.pack(pady=5)
-        ttk.Label(port_frame, text="Cổng UART:").pack(side="left")
+        port_frame.pack(pady=1000)
+        ttk.Label(port_frame, text="Cổng UART:").pack(side="right")
 
         self.serial_ports = get_serial_ports()
         if not self.serial_ports:
             self.serial_ports = ["None"]
         self.port_var.set(self.serial_ports[0])
 
-        self.serial_port_dropdown = ttk.OptionMenu(
-            port_frame, self.port_var, self.port_var.get(), *self.serial_ports
+        self.serial_port_dropdown = tk.OptionMenu(
+            port_frame, self.port_var, *self.serial_ports
         )
         self.serial_port_dropdown.pack(side="left", padx=5)
+
         ttk.Button(port_frame, text="Kết nối lại", command=self.restart_serial).pack(side="left", padx=5)
         self.process_uart_log_queue()
 
     def image_processing(self):
-        def thread_job():
-            genGcode.main()
-            self.root.after(0, lambda: messagebox.showinfo("Thành công", "Xử lý ảnh thành công"))
-        threading.Thread(target=thread_job, daemon=True).start()
+        if global_var.index_capture_image:
+            def thread_job():
+                genGcode.main()
+                self.root.after(0, lambda: messagebox.showinfo("Thành công", "Xử lý ảnh thành công"))
+            threading.Thread(target=thread_job, daemon=True).start()
 
     def generate_gcode(self):
-        def thread_job():
-            RobotGcodeGen.main()
-            self.show_mirror = True
-            global_var.is_finish_covert_image = False
-            self.root.after(0, lambda: messagebox.showinfo("Thành công", "Sinh gcode thành công"))
-        threading.Thread(target=thread_job, daemon=True).start()
+        if global_var.index_capture_image:
+            def thread_job():
+                RobotGcodeGen.main()
+                self.show_mirror = True
+                global_var.is_finish_covert_image = False
+                self.root.after(0, lambda: messagebox.showinfo("Thành công", "Sinh gcode thành công"))
+            threading.Thread(target=thread_job, daemon=True).start()
 
     def choose_gcode_file(self):
         filepath = filedialog.askopenfilename(
@@ -568,6 +571,9 @@ class App:
                 msg = self.uart_log_queue.get_nowait()
                 self.uart_log_box.configure(state='normal')
                 self.uart_log_box.insert(tk.END, msg + "\n")
+                # Tối đa 300 dòng log, xóa dòng đầu nếu quá
+                if int(float(self.uart_log_box.index('end-1c').split('.')[0])) > 300:
+                    self.uart_log_box.delete('1.0', '2.0')
                 self.uart_log_box.see(tk.END)
                 self.uart_log_box.configure(state='disabled')
         except queue.Empty:
@@ -577,14 +583,13 @@ class App:
     def do_continue_gcode(self):
         if self.gcode_file_path:
             self.stop_event.clear()
-
             threading.Thread(target=self.send_gcode_in_background, daemon=True).start()
 
     def do_stop(self):
         return
 
     def validate_result_window(self):
-            # if self.source_var == "ex_camera":
+        if global_var.index_capture_image:
             input_path = f"input_capture_excam/{global_var.index_capture_image}.jpg"
             image_name = f"{global_var.index_capture_image}.jpg"
             extract_frame.preprocessing(image_name)
@@ -616,25 +621,49 @@ class App:
             plt.tight_layout()
             plt.show()
 
-    def send_gcode_in_background(self, uart_box):
-        self.gcode_lines = read_gcode_file(self.gcode_file_path)
-        total_cmds = len(self.gcode_lines)
+    def run_gcode(self, gcode_lines):
+        total_cmds = len(gcode_lines)
         self.stop_event.clear()
         self.shared_state = {'on_flight': 0, 'sent': 0, 'received': 0, 'blocking': 0}
-        thread1 = threading.Thread(target=send_gcode_file,
-                         args=(self.protocol, self.gcode_lines, total_cmds, self.shared_state, self.queue_lock, self.send_signal, self.stop_event),
-                         daemon=True)
-        thread3 = threading.Thread(target=receive_gcode_done,
-                         args=(self.protocol, total_cmds, self.shared_state, self.queue_lock, self.send_signal, self.stop_event),
-                         daemon=True)
-        start_time = time.time()
-        thread1.start()
-        thread3.start()
-        thread1.join()
 
-        thread3.join()
-        end_time = time.time()
-        log_uart(f"Execution time: {end_time-start_time}", self.uart_log_queue)
+        sender_thread = threading.Thread(
+            target=send_gcode_file,
+            args=(self, self.protocol, gcode_lines, total_cmds,
+                  self.shared_state, self.queue_lock, self.send_signal, self.stop_event),
+            daemon=True
+        )
+
+        receiver_thread = threading.Thread(
+            target=receive_gcode_done,
+            args=(self.protocol, total_cmds, self.shared_state,
+                  self.queue_lock, self.send_signal, self.stop_event),
+            daemon=True
+        )
+
+        sender_thread.start()
+        receiver_thread.start()
+        sender_thread.join()
+        receiver_thread.join()
+
+    def send_gcode_in_background(self, uart_box=None):
+        def task():
+            try:
+                start_time = time.time()
+
+                gcode_1 = read_gcode_file(self.gcode_file_path)
+                self.run_gcode(gcode_1)
+
+                gcode_2 = read_gcode_file("draw_rectangle.txt")
+                self.run_gcode(gcode_2)
+
+                end_time = time.time()
+                log_uart(f"Execution time: {end_time - start_time:.2f}s", self.uart_log_queue)
+
+            except Exception as e:
+                log_uart(f"Lỗi khi gửi G-code: {str(e)}", self.uart_log_queue)
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
 
     def send_manual_command(self):
         cmd = self.manual_entry.get().strip().upper()
@@ -694,11 +723,15 @@ class App:
         threading.Thread(target=self.capture_loop, daemon=True).start()
 
     def capture_loop(self):
+        last_update = 0
         while self.running and self.cap and self.cap.isOpened():
+            now = time.time()
+            if now - last_update < 1 / 30:  # Giới hạn 30 FPS
+                time.sleep(0.005)
+                continue
+            last_update = now
             if self.source_var == "ex_camera":
-                # Set MIN saturation (màu gần trắng đen)
                 self.cap.set(cv2.CAP_PROP_SATURATION, 0)
-                # Set MAX brightness (hình sáng nhất có thể)
                 self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 255)
             ret, frame = self.cap.read()
             if ret:
@@ -706,25 +739,25 @@ class App:
                 self.last_frame = frame
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 show_img = Image.fromarray(rgb).resize((IMG_WIDTH, IMG_HEIGHT))
-                self.root.after(0, lambda: self.display_image(self.left_img_label, show_img))
+                self.root.after(0, lambda img=show_img: self.display_image(self.left_img_label, img))
                 if global_var.is_finish_covert_image:
                     image_handle_name = os.path.splitext(global_var.image_name)[0]
                     self.show_mirror = False
                     img_after_processing = (Image.open(f"Image2Gcode/output_image/{image_handle_name}_binary.jpg")
-                           .resize((IMG_WIDTH, IMG_HEIGHT)))
-                    self.root.after(0, lambda: self.display_image(self.right_img_label, img_after_processing))
+                                            .resize((IMG_WIDTH, IMG_HEIGHT)))
+                    self.root.after(0, lambda img=img_after_processing: self.display_image(self.right_img_label, img))
                 elif self.show_mirror:
-                    self.root.after(0, lambda: self.display_image(self.right_img_label, show_img))
+                    self.root.after(0, lambda img=show_img: self.display_image(self.right_img_label, img))
                 elif self.is_simulate_image:
                     image_handle_simulate_name = os.path.splitext(global_var.image_name)[0]
                     image_simulate = (Image.open(f"Image2Gcode/simulate_image/{image_handle_simulate_name}.png")
-                                            .resize((640, 480)))
-                    self.root.after(0, lambda: self.display_image(self.right_img_label, image_simulate))
+                                      .resize((IMG_WIDTH, IMG_HEIGHT)))
+                    self.root.after(0, lambda img=image_simulate: self.display_image(self.right_img_label, img))
                 elif global_var.is_get_image_from_phone:
                     phone_image = (Image.open(f"phone_image/{global_var.index_capture_image}.jpg")
-                                      .resize((640, 480)))
-                    self.root.after(0, lambda: self.display_image(self.right_img_label,phone_image))
-            time.sleep(0.0001)
+                                   .resize((IMG_WIDTH, IMG_HEIGHT)))
+                    self.root.after(0, lambda img=phone_image: self.display_image(self.right_img_label, img))
+            time.sleep(0.005)
 
     def switch_source(self):
         cv2.setLogLevel(0)
