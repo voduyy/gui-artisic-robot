@@ -312,8 +312,8 @@ def send_gcode_package(app_instance, protocol, gcode_lines, total_cmds, shared_s
     with queue_lock:
         size = PACKAGE_SIZE - shared_state['on_flight']
         for _ in range(size):
-            if stop_event.is_set():
-                break
+            # if stop_event.is_set():
+            #     break
             if shared_state['sent'] >= total_cmds or shared_state['on_flight'] >= PACKAGE_SIZE:
                 break
             app_instance.stop_event.clear()
@@ -497,7 +497,6 @@ class App:
     def do_continue_gcode(self):
         if self.gcode_file_path:
             self.stop_event.clear()
-            
             threading.Thread(target=self.send_gcode_in_background, daemon=True).start()
 
     def do_stop(self):
