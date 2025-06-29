@@ -384,7 +384,7 @@ def temp_thread(app_instance, protocol, total_cmds, done_arr, temp_arr, shared_s
         send_signal.set()
 
 
-def send_gcode_file(app_instance, protocol, gcode_lines, total_cmds, shared_state, send_signal, receive_signal, stop_event, done_queue,shared_state_lock):
+def send_gcode_file(app_instance, protocol, gcode_lines, total_cmds, shared_state, send_signal, receive_signal, stop_event, done_queue, shared_state_lock):
     sent_done = 0
     queue_empty = 0
     protocol.reset_count_queue()
@@ -652,45 +652,20 @@ class App:
     def run_gcode(self, gcode_lines):
         total_cmds = len(gcode_lines)
         self.stop_event.clear()
-        thread1 = threading.Thread(target=send_gcode_file,
-                         args=(self, self.protocol, gcode_lines,total_cmds,
-                               self.shared_state, self.send_signal, self.receive_signal, self.stop_event
-                               ,self.done_queue,self.shared_state_lock),
-                         daemon=True)
-        # thread2 = threading.Thread(target=temp_thread,
-        #                            args=(self, self.protocol,total_cmds,
-        #                                  self.done_arr, self.temp_arr, self.shared_state, self.send_signal,
-        #                                  self.temp_signal, self.stop_event,self.arr_lock,self.shared_state_lock,self.done_queue,),
-        #                            daemon=True)
-        thread3 = threading.Thread(target=receive_gcode_done,
-                         args=(self.protocol, self.receive_signal
-                               , self.send_signal, self.stop_event, self.done_queue,),
-                         daemon=True)
-        start_time = time.time()
-        thread1.start()
-        # thread2.start()
-        thread3.start()
-        thread1.join()
-        # thread2.join()
-        thread3.join()
-        end_time = time.time()
-        # log_uart(f"Execution time: {end_time-start_time}")
-        print(f"Execution time: {end_time-start_time}")
         self.shared_state = {'on_flight': 0, 'sent': 0, 'received': 0, 'blocking': 0}
 
         sender_thread = threading.Thread(
             target=send_gcode_file,
             args=(self, self.protocol, gcode_lines, total_cmds,
-                  self.shared_state, self.queue_lock, self.send_signal, self.stop_event),
+                  self.shared_state, self.send_signal, self.receive_signal, self.stop_event,
+                  self.done_queue,self.shared_state_lock),
             daemon=True
         )
 
-        receiver_thread = threading.Thread(
-            target=receive_gcode_done,
-            args=(self.protocol, total_cmds, self.shared_state,
-                  self.queue_lock, self.send_signal, self.stop_event),
-            daemon=True
-        )
+        receiver_thread = threading.Thread(target=receive_gcode_done,
+                         args=(self.protocol, self.receive_signal,
+                               self.send_signal, self.stop_event, self.done_queue),
+                         daemon=True)
 
         sender_thread.start()
         receiver_thread.start()
