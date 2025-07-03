@@ -5,7 +5,7 @@ import time
 # Cấu hình server
 SERVER_IP = "0.0.0.0"  # Lắng nghe trên mọi địa chỉ IP
 SERVER_PORT = 8988
-BUFFER_SIZE = 4096  # Kích thước buffer để đọc dữ liệu
+BUFFER_SIZE = 16384  # Kích thước buffer để đọc dữ liệu
 
 # Đảm bảo thư mục để lưu tệp đã được tạo
 SAVE_DIR = "phone_image"

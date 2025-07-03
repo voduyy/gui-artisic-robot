@@ -755,7 +755,7 @@ class App:
                     self.root.after(0, lambda img=image_simulate: self.display_image(self.right_img_label, img))
                 elif global_var.is_get_image_from_phone:
                     phone_image = (Image.open(f"phone_image/{global_var.index_capture_image}.jpg")
-                                   .resize((IMG_WIDTH, IMG_HEIGHT)))
+                                   .resize((300, 450)))
                     self.root.after(0, lambda img=phone_image: self.display_image(self.right_img_label, img))
             time.sleep(0.005)
 
@@ -820,16 +820,12 @@ class App:
                 try:
                     image_path = recv_phone_image.receive_file()
                     if image_path:
+                        global_var.is_choose_image = False
                         self.show_mirror = False
                         self.is_simulate_image = False
                         global_var.is_capture = False
-                        global_var.is_choose_image = False
-                        global_var.is_get_image_from_phone = True
                         global_var.is_finish_covert_image = False
                         img = Image.open(image_path)
-                        img = img.resize((int(1836 * 480 / 3264), 480), Image.LANCZOS)
-                        self.right_img_label.after(0, lambda: self.display_image(self.right_img_label, img))
-
                 except Exception as e:
                     print(f"[!] Lỗi khi nhận ảnh: {e}")
                     time.sleep(1)  # Tránh chiếm CPU nếu có lỗi lặp
@@ -870,7 +866,7 @@ if __name__ == "__main__":
     global_var.is_capture = False
     global_var.is_finish_covert_image = False
     global_var.is_choose_image = False
-    global_var.is_get_image_from_phone = False
+    global_var.is_get_image_from_phone = True
     root = tk.Tk()
     app = App(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)

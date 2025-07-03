@@ -152,8 +152,6 @@ class Picture:
                         spindle_on = True
                     x_out, y_out = x * ratio, y_flipped * ratio
                     self.gcode.append(f"G1 X{x_out:.2f} Y{y_out:.2f}")
-                    self.gcode.append(f"G92 X{x_out:.2f} Y{y_out:.2f}")
-
         # Kết thúc nếu spindle đang bật thì tắt đi
         if spindle_on:
             self.gcode.append("M5")
@@ -223,6 +221,7 @@ def main():
         path = os.path.join(input_face_dir, "capture")
     else:
         input_face_dir = "..\phone_image"
+        path=input_face_dir
     filenames = ""
     # mode_manual = '1'
     # if not global_var.is_capture and not global_var.is_choose_image:
