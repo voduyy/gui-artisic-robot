@@ -8,6 +8,7 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import global_var
+start_time = time.time()
 
 # ===== Định nghĩa robot =====
 L1, L2, L3, L4, L5 = 0.211, 0.15, 0.0, 0.23, 0.07
@@ -62,8 +63,8 @@ def compute_gcode_line(cmd, x, y, z, q0=None, max_attempts=10):
         if -90 < q_deg[0] < 90 and -120 < q_deg[1] < 120 and -120 < q_deg[2] < 120:
             x_step = -q_deg[0] * STEP_CONVERT['X']
             y_step = -q_deg[1] * STEP_CONVERT['Y']
-            z_step = q_deg[2] * STEP_CONVERT['Z']
-            gcode_line = f"{cmd} X{x_step:.2f} Y{y_step:.2f} Z{z_step:.2f} F2000"
+            z_step = -q_deg[2] * STEP_CONVERT['Z']
+            gcode_line = f"{cmd} X{x_step:.2f} Y{y_step:.2f} Z{z_step:.2f} F850"
             return gcode_line, q_deg, ik_result.q
 
     return None, None, None
@@ -119,7 +120,7 @@ def main():
     print(f"🧠 GCODE_WIDTH: {gcode_width:.1f} mm | Tâm gốc: ({x_center:.1f}, {y_center:.1f}, {z_center:.1f})")
 
     # ===== Giai đoạn 2: Biến đổi và sinh G-code ====
-    DRAW_WIDTH = 0.1  # mét
+    DRAW_WIDTH = 0.12  # mét
     SCALE = DRAW_WIDTH / gcode_width
 
     def set_axes_equal(ax):
@@ -144,41 +145,44 @@ def main():
     x_offset = None  # Khởi tạo offset X là None
     z_offset = None  # Khởi tạo offset X là None
     # ===== Di chuyển đến điểm tâm ban đầu =====
-    x_init, y_init, z_init = 0, 0.275, 0.12
+    x_init, y_init, z_init = 0, 0.295, 0.2
     init_line, q_deg_init, q_rad_init = compute_gcode_line("G1", x_init, y_init, z_init)
     if init_line:
         print(f"🚀 Di chuyển đến tâm: {init_line}")
-        print("🔧 Góc khớp (deg): q1 = {:.2f}, q2 = {:.2f}, q3 = {:.2f}".format(*q_deg_init))
-        gcode_lines.append(init_line)
+        print("🔧 Góc khớp (deg): q1 = {:.1f}, q2 = {:.1f}, q3 = {:.1f}".format(*q_deg_init))
+        # Tính số bước cho G92 và G1 từ góc khớp
+        x_step = -q_deg_init[0] * STEP_CONVERT['X']
+        y_step = -q_deg_init[1] * STEP_CONVERT['Y']
+        z_step = -q_deg_init[2] * STEP_CONVERT['Z']
+        gcode_lines.append(f"G92 X{x_step:.2f}")  # Lệnh G92 chỉ có X
+        gcode_lines.append(f"G1 Y{y_step:.2f} Z{z_step:.2f} F850")  # Lệnh G1 đầy đủ
         q_list.append(q_deg_init)
         q0 = q_rad_init  # Cập nhật nghiệm gần nhất
     else:
-        print("❌ Không thể di chuyển đến điểm tâm đầu (0, 0.2, 0.15)")
+        print("❌ Không thể di chuyển đến điểm tâm đầu")
     # ===== Đọc lại G-code và xử lý từng dòng =====
+    prev_point = None
     for line in gcode_raw_lines:
         line = line.strip()
         match = pattern.search(line)
         if not match:
-            if line.startswith(("M3", "M5", "G28")):
+            if line.startswith(("M3", "M5")):
                 gcode_lines.append(line)
             continue
 
-        cmd = match.group(1).upper()
+        cmd = "G1"
         x_gcode = float(match.group(2))
         y_gcode = float(match.group(3))
 
         # Scale và dịch tâm
         x = (x_gcode - x_center) * SCALE
-        z = (y_gcode - y_center) * SCALE + 0.12  # đặt tâm tại Z = 0.12
-        y = 0.275  # chiều cao cố định
+        z = (y_gcode - y_center) * SCALE + 0.2  # đặt tâm tại Z = 0.12
+        y = 0.295  # chiều cao cố định
 
         gcode_line, q_deg, q_rad = compute_gcode_line(cmd, x, y, z, q0=q0)
         if q_rad is None:
-            print(f"❌ IK thất bại tại điểm ({x:.3f}, {y:.3f}, {z:.3f})")
+            print(f"❌ IK thất bại tại điểm: ({x:.3f}, {y:.3f}, {z:.3f})")
         else:
-            print(f"✅ {gcode_line}")
-            print("🔧 Góc khớp (deg): q1 = {:.2f}, q2 = {:.2f}, q3 = {:.2f}".format(*q_deg))
-            print(f"🔧 Thành công tại điểm: ({x:.3f}, {y:.3f}, {z:.3f})")
             gcode_lines.append(gcode_line)
             q_list.append(q_deg)
             q0 = q_rad
@@ -190,6 +194,8 @@ def main():
         for line in gcode_lines:
             f.write(line + "\n")
     print(f"\n✅ Đã lưu {len(gcode_lines)} dòng vào '{output_file}'")
+    end_time = time.time()
+    print(f"⏱️ Thời gian chuyển đổi G-code: {end_time - start_time:.3f} giây")
 if __name__ == "__main__":
     start_time = time.time()
     main()

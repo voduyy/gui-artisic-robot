@@ -19,6 +19,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import global_var
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
+
+
 # Adaptive Resampling (góc + khoảng cách)
 def simplify_and_adaptive_resample(points, simplify_epsilon=1.0, angle_thresh=10, min_spacing=4):
     if len(points) < 3:
