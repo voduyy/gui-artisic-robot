@@ -10,14 +10,13 @@ from PIL import Image, ImageTk
 import cv2
 import threading
 import time
-import serial
 from serial.tools import list_ports
+import serial
 
 import global_var
 # from Image2Gcode import genGcode
 from serial import threaded
 import queue
-import datetime
 import os
 
 ENCODING = 'utf-8'
@@ -250,12 +249,12 @@ class SerialCommunication(serial.threaded.LineReader):
 def find_uart_port():
     ports = list_ports.comports()
     for port, desc, hwid in ports:
-        if "ttyACM" in port or "USB" in port or "ACM" in port or "COM" in port:
+        if "ttyACM0" in port or "USB" in port or "ACM" in port or "COM" in port:
             return port
     return None
 
 def send_uart_command(protocol, cmd, wait_ok=True, retries=3):
-    for _ in range(retries):
+    for attempt in range(retries):
         protocol.ok_received = False
         msg = f"{cmd}\n"
         protocol.transport.write(msg.encode(ENCODING))
@@ -275,7 +274,7 @@ def reset_system(protocol):
     send_uart_command(protocol, "G28")
     protocol.reset_count_queue()
 
-def run_initialization_sequence(protocol, stop_event):
+def run_initialization_sequence(protocol):
     cmds = ["$X", "$HX", "$HY", "$HZ", "$HA", "$HB"]
     for cmd in cmds:
         if stop_event.is_set(): return
@@ -445,41 +444,32 @@ class App:
 
         source_frame = ttk.Frame(self.root)
         source_frame.pack(pady=5)
-        self.source_var = tk.StringVar(value="in_camera")
+
+        self.source_var = tk.StringVar(value="camera")
         ttk.Label(source_frame, text="Source:").pack(side="left")
-        ttk.Radiobutton(source_frame, text="Camera Laptop", variable=self.source_var, value="in_camera", command=self.switch_source).pack(side="left")
-        ttk.Radiobutton(source_frame, text="Camera ngoài", variable=self.source_var, value="ex_camera", command=self.switch_source).pack(side="left")
-        ttk.Button(source_frame, text="📂 Chọn ảnh", command=self.choose_image).pack(side="left", padx=5)
+        ttk.Radiobutton(source_frame, text="Camera", variable=self.source_var, value="camera", command=self.switch_source).pack(side="left")
+        ttk.Radiobutton(source_frame, text="Image", variable=self.source_var, value="image", command=self.switch_source).pack(side="left")
+        ttk.Button(source_frame, text="📂 Choose Image", command=self.choose_image).pack(side="left", padx=5)
         ttk.Button(source_frame, text="📸 Chụp hình", command=self.capture_frame).pack(side="left", padx=5)
-        ttk.Button(source_frame, text="Xử lý ảnh", command=self.image_processing).pack(side="left", padx=5)
-        ttk.Button(source_frame, text="Sinh gcode", command=self.generate_gcode).pack(side="left", padx=5)
 
         button_frame = ttk.Frame(self.root)
         button_frame.pack(pady=10)
 
+        # 🔧 G-code file path + select button
         gcode_frame = ttk.Frame(button_frame)
         gcode_frame.pack(side="left", padx=5)
         self.gcode_entry = ttk.Entry(gcode_frame, width=40, textvariable=self.gcode_path_var, state="readonly")
         self.gcode_entry.pack(side="left")
         ttk.Button(gcode_frame, text="📂", width=3, command=self.choose_gcode_file).pack(side="left", padx=2)
 
-        ttk.Button(button_frame, text="📤 Gửi gcode", width=12, command=self.do_send_gcode).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="🛑 Dừng", width=12, command=self.do_stop).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="🔁 Tiếp tục", width=12, command=self.do_continue_gcode).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="🏠 Homing", width=12, command=lambda: threading.Thread(target=self.do_homing, daemon=True).start()).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="🔄 Reset", width=8, command=lambda: threading.Thread(target=self.do_reset, daemon=True).start()).pack(side="left", padx=5)
-        info_frame = ttk.Frame(self.root)
-        info_frame.pack(pady=5)
-        code_button_frame = ttk.Frame(self.root)
-        code_button_frame.pack(anchor="c", padx=10, pady=5)
+        # Các nút điều khiển
+        ttk.Button(button_frame, text="📤 Send", width=12, command=self.do_send_gcode).pack(side="left", padx=5)
+        ttk.Button(button_frame, text="🛑 Stop", width=12, command=self.do_stop).pack(side="left", padx=5)
+        ttk.Button(button_frame, text="🔁 Continue", width=12, command=self.do_continue_gcode).pack(side="left", padx=5)
+        ttk.Button(button_frame, text="🏠 Homing", width=12, command=self.do_homing).pack(side="left", padx=5)
+        ttk.Button(button_frame, text="🔄 Reset", width=12, command=self.do_reset).pack(side="left", padx=5)
 
-        ttk.Button(code_button_frame, text="📘 Error Codes", width=14,
-                   command=lambda: show_error_codes_window(self.root)).pack(side="left", padx=5)
-        ttk.Button(code_button_frame, text="⚙️ Setting Codes", width=16,
-                   command=lambda: show_setting_codes_window(self.root)).pack(side="left", padx=5)
-        ttk.Button(code_button_frame, text="🚨 Alarm Codes", width=14,
-                   command=lambda: show_alarm_codes_window(self.root)).pack(side="left", padx=5)
-
+        # Lệnh thủ công
         manual_frame = ttk.Frame(self.root)
         manual_frame.pack(pady=5)
         self.manual_entry = ttk.Entry(manual_frame, width=40)
@@ -502,14 +492,11 @@ class App:
         return
 
     def choose_gcode_file(self):
-        filepath = filedialog.askopenfilename(
-            initialdir="Image2Gcode/output_gcode",
-            title="Chọn File gcode",
-            filetypes=[("Gcode files", "*.gcode *.nc *.txt")]
-        )
+        filepath = filedialog.askopenfilename(filetypes=[("G-code files", "*.txt *.gcode"), ("All files", "*.*")])
         if filepath:
             self.gcode_file_path = filepath
             self.gcode_path_var.set(filepath)
+            # print(f"📁 Đã chọn file G-code: {filepath}")
 
     def do_send_gcode(self):
         if not self.gcode_file_path:
@@ -525,12 +512,14 @@ class App:
 
     def do_continue_gcode(self):
         if self.gcode_file_path:
+            # print(f"🔁 Tiếp tục từ dòng {self.shared_state['sent']}")
+            #hello
             self.stop_event.clear()
-            
+
             threading.Thread(target=self.send_gcode_in_background, daemon=True).start()
 
     def do_stop(self):
-        return 
+        return
 
     def send_gcode_in_background(self):
         gcode_lines = read_gcode_file(self.gcode_file_path)
@@ -561,6 +550,15 @@ class App:
         # log_uart(f"Execution time: {end_time-start_time}")
         print(f"Execution time: {end_time-start_time}")
 
+    # def send_manual_command(self):
+    #     if self.protocol:
+    #         cmd = self.manual_entry.get().strip().upper()
+    #         if cmd in ["CTRL X", "CTRL+X"]:
+    #             self.protocol.transport.write(b'\x18')
+    #             # print("📨 Gửi: Ctrl+X (0x18)")
+    #         else:
+    #             send_uart_command(self.protocol, cmd)
+    #         self.manual_entry.delete(0, tk.END)
     def send_manual_command(self):
         cmd = self.manual_entry.get().strip().upper()
         self.manual_entry.delete(0, tk.END)
@@ -574,7 +572,6 @@ class App:
                 # log_uart("➡️TX: Ctrl+X (0x18)")
             else:
                 send_uart_command(self.protocol, cmd)
-
     def start_serial(self):
         port = find_uart_port()
         if not port:
@@ -584,6 +581,7 @@ class App:
         thread = serial.threaded.ReaderThread(ser, SerialCommunication)
         thread.start()
         self.protocol = thread.connect()[1]
+        # time.sleep(2)
         send_uart_command(self.protocol, "$$", wait_ok=False)
 
     def start_camera(self, camera_index=0):
@@ -594,25 +592,20 @@ class App:
             messagebox.showerror("Lỗi", "Không thể mở camera.")
             self.cap = None
             return
-        threading.Thread(target=self.capture_loop, daemon=True).start()
+        self.update_camera()
 
-    def capture_loop(self):
-        while self.running and self.cap and self.cap.isOpened():
+    def update_camera(self):
+        if self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
-                frame = cv2.flip(frame, 1)
                 self.last_frame = frame
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(rgb).resize((IMG_WIDTH, IMG_HEIGHT))
-                self.root.after(0, lambda: self.display_image(self.left_img_label, img))
-                if global_var.is_finish_covert_image:
-                    self.show_mirror = False
-                    img = (Image.open(f"Image2Gcode/output_image/{global_var.index_capture_image}_binary.jpg")
-                           .resize((450, 450)))
-                    self.root.after(0, lambda: self.display_image(self.right_img_label, img))
-                elif self.show_mirror:
-                    self.root.after(0, lambda: self.display_image(self.right_img_label, img))
-            time.sleep(0.03)
+                self.display_image(self.left_img_label, img)
+                if self.show_mirror:
+                    self.display_image(self.right_img_label, img)
+        if self.running:
+            self.root.after(30, self.update_camera)
 
     def switch_source(self):
         if self.source_var.get() == "in_camera":
@@ -621,6 +614,7 @@ class App:
             elif self.cap is None:
                 self.start_camera(camera_index=0)
             self.show_mirror = True
+            self.update_camera()
         else:
             if self.cap:
                 self.cap.release()
@@ -630,33 +624,16 @@ class App:
 
 
     def choose_image(self):
-        global filename
-        filepath = filedialog.askopenfilename(
-            initialdir="Image2Gcode/input_image/capture",
-            title="Chọn ảnh",
-            filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp")]
-        )
+        filepath = filedialog.askopenfilename()
         if not filepath:
             return
-        if filepath:
-            filename = os.path.basename(filepath)
-        messagebox.showinfo("Thành công", f"Chọn thành công ảnh {filename}.")
-        global_var.image_name = ""
-        global_var.image_name = filename
         img = Image.open(filepath).resize((IMG_WIDTH, IMG_HEIGHT))
         self.display_image(self.right_img_label, img)
-        global_var.is_choose_image = True
         self.show_mirror = False
 
     def capture_frame(self):
         if self.last_frame is not None:
-            global_var.is_finish_covert_image = False
-            global_var.index_capture_image += 1
-            global_var.is_capture = True
-            global_var.image_name = ""
-            global_var.image_name = f"{global_var.index_capture_image}.jpg"
             img = Image.fromarray(cv2.cvtColor(self.last_frame, cv2.COLOR_BGR2RGB)).resize((IMG_WIDTH, IMG_HEIGHT))
-            img.save(f"Image2Gcode/input_image/capture/{global_var.index_capture_image}.jpg")
             self.display_image(self.right_img_label, img)
             self.show_mirror = False
 
@@ -667,12 +644,11 @@ class App:
 
     def do_homing(self):
         if self.protocol:
-            run_initialization_sequence(self.protocol, self.stop_event)
+            threading.Thread(target=run_initialization_sequence, args=(self.protocol,), daemon=True).start()
 
     def do_reset(self):
         if self.protocol:
-            reset_system(self.protocol)
-        self.shared_state['on_flight'] = 0
+            threading.Thread(target=reset_system, args=(self.protocol,), daemon=True).start()
 
     def on_close(self):
         self.running = False
@@ -681,11 +657,6 @@ class App:
         self.root.destroy()
 
 if __name__ == "__main__":
-    global_var.image_name = ""
-    global_var.index_capture_image = 0
-    global_var.is_capture = False
-    global_var.is_finish_covert_image = False
-    global_var.is_choose_image = False
     root = tk.Tk()
     app = App(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
